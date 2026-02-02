@@ -1190,6 +1190,134 @@ function updateFoamParticles() {
 }
 
 // ============================================================
+// Steam Particles - rise from liquid surface when boiling
+// ============================================================
+
+let steamParticles = [];
+
+function createSteamParticle() {
+  if (!beakerBoundingBox || state.totalVolume === 0) return;
+
+  const bMin = beakerBoundingBox.min;
+  const bMax = beakerBoundingBox.max;
+  const liquidTop = bMin.y + state.liquidLevel * (bMax.y - bMin.y) * 0.88;
+  const cx = (bMin.x + bMax.x) / 2;
+  const cz = (bMin.z + bMax.z) / 2;
+  const bRadius = (bMax.x - bMin.x) * 0.34;
+
+  const size = Math.random() * 0.06 + 0.03;
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.15 + Math.random() * 0.1,
+    depthWrite: false,
+  });
+
+  const steam = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 8), mat);
+
+  const angle = Math.random() * Math.PI * 2;
+  const r = Math.random() * bRadius * 0.7;
+
+  steam.position.set(
+    cx + Math.cos(angle) * r,
+    liquidTop + 0.05,
+    cz + Math.sin(angle) * r,
+  );
+
+  steam.userData = {
+    vy: 0.008 + Math.random() * 0.012,
+    driftX: (Math.random() - 0.5) * 0.002,
+    driftZ: (Math.random() - 0.5) * 0.002,
+    life: 1.0,
+    decay: 0.008 + Math.random() * 0.008,
+    growRate: 1.01 + Math.random() * 0.01,
+    initialOpacity: 0.15 + Math.random() * 0.1,
+  };
+
+  scene.add(steam);
+  steamParticles.push(steam);
+}
+
+function updateSteamParticles() {
+  for (let i = steamParticles.length - 1; i >= 0; i--) {
+    const s = steamParticles[i];
+    const d = s.userData;
+
+    s.position.y += d.vy;
+    s.position.x += d.driftX;
+    s.position.z += d.driftZ;
+
+    // Grow as it rises (steam expands)
+    s.scale.multiplyScalar(d.growRate);
+
+    d.life -= d.decay;
+    s.material.opacity = d.life * d.initialOpacity;
+
+    if (d.life <= 0) {
+      scene.remove(s);
+      s.geometry.dispose();
+      s.material.dispose();
+      steamParticles.splice(i, 1);
+    }
+  }
+}
+
+// ============================================================
+// Boiling Logic - continuous boiling when temperature >= 100
+// ============================================================
+
+function updateBoiling() {
+  if (!beakerBoundingBox || state.totalVolume <= 0) return;
+
+  if (state.temperature >= 100) {
+    // Intense boiling bubbles
+    const intensity = Math.min((state.temperature - 100) / 100, 1);
+    const bubbleChance = 0.3 + intensity * 0.7;
+
+    if (Math.random() < bubbleChance) {
+      createBubble(intensity > 0.5);
+    }
+    if (Math.random() < bubbleChance * 0.5) {
+      createBubble(false);
+    }
+
+    // Steam particles
+    const steamChance = 0.2 + intensity * 0.6;
+    if (Math.random() < steamChance) {
+      createSteamParticle();
+    }
+
+    // Surface turbulence from boiling
+    waveState.turbulence = Math.min(
+      waveState.turbulence + 0.005,
+      0.05 + intensity * 0.1,
+    );
+    waveState.targetAmplitude = Math.max(
+      waveState.targetAmplitude,
+      0.015 + intensity * 0.03,
+    );
+
+    // Evaporation - liquid slowly decreases
+    const evapRate = 0.05 + intensity * 0.15;
+    state.totalVolume = Math.max(0, state.totalVolume - evapRate);
+
+    // Update contents proportionally
+    if (state.totalVolume <= 0) {
+      state.beakerContents = [];
+      state.totalVolume = 0;
+      showNotification("Liquid fully evaporated!");
+    }
+
+    updateUI();
+  } else if (state.temperature >= 70) {
+    // Pre-boiling: occasional small bubbles
+    if (Math.random() < 0.08) {
+      createBubble(false);
+    }
+  }
+}
+
+// ============================================================
 // Splash Particles - appear when pour stream hits liquid
 // ============================================================
 
@@ -1700,6 +1828,13 @@ function setupEvents() {
     });
     foamParticles = [];
 
+    steamParticles.forEach((s) => {
+      scene.remove(s);
+      s.geometry.dispose();
+      s.material.dispose();
+    });
+    steamParticles = [];
+
     if (liquidMesh) {
       liquidMesh.scale.y = 0.001;
       liquidMaterial.opacity = 0;
@@ -1744,6 +1879,8 @@ function animate() {
   updateSplashParticles();
   updatePrecipitateParticles();
   updateFoamParticles();
+  updateSteamParticles();
+  updateBoiling();
 
   if (liquidMesh && state.isStirring && state.totalVolume > 0) {
     stirAngle += 0.05;
